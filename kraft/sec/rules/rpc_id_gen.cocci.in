@@ -1,0 +1,21 @@
+@initialize:python@ @@
+import os
+import operator
+
+filename = {{ filename }}
+file = open(filename, "r")
+lines = file.readlines()
+entries = {}
+entry_cnt = 0
+for l in lines:
+    entries[l.strip()] = entry_cnt
+    entry_cnt += 1
+file.close()
+
+@finalize:python@ @@
+filename = {{ filename }}
+file = open(filename, "w")
+sorted_entries = sorted(entries.items(), key=operator.itemgetter(1))
+for e in sorted_entries:
+    file.write(e[0] + "\n")
+file.close()

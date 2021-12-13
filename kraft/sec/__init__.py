@@ -150,7 +150,9 @@ def coccinelle_rewrite(lib, rule_file, fulldiff):
 
         with open(log, 'wb') as logf:
             try:
-                cmd1 = ["spatch", "-j", "6", "-in_place", "-sp_file", rule_file, file]
+                # we can't use parallel jobs when building for EPT since this leads to
+                # @finalize scripts being called too early
+                cmd1 = ["spatch", "-in_place", "-sp_file", rule_file, file]
                 cmd2 = ["diff", "-urNp", backup_src, file]
                 logf.write(bytes("$ " + " ".join(cmd1) + "\n", 'utf-8'))
                 logf.flush()
