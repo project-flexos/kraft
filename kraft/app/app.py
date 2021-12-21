@@ -837,18 +837,22 @@ class Application(Component):
                 add_local_linkerscript(lib, fulldiff=fulldiff)
 
             # then generate cocci files dynamically from the template
-            gr_rule_template = get_sec_rule("gatereplacer.cocci.in")
+            if is_ept:
+                gr_rule_template = get_sec_rule("gatereplacer_ept.cocci.in")
+            else:
+                gr_rule_template = get_sec_rule("gatereplacer.cocci.in")
             if FCALLS_enabled:
                 cb_rule_template = get_sec_rule("rmcallbacks.cocci.in")
             else:
                 cb_rule_template = get_sec_rule("callbackreplacer.cocci.in")
+
             gr_rule_template = gr_rule_template.replace("{{ comp_cur_nb }}",
                 str(lib.compartment.number))
+            ept_rpc_id_prefix = "_RPC_ID_" if is_ept else ""
             cb_rule_template = cb_rule_template.replace("{{ comp_cur_nb }}",
                 str(lib.compartment.number))
             gr_rule = ""
 
-            ept_rpc_id_prefix = "_RPC_ID_" if is_ept else ""
             if (is_ept):
                 rpc_id_gen_template = get_sec_rule("rpc_id_gen.cocci.in")
                 rpc_id_gen_template = rpc_id_gen_template.replace("{{ filename }}",

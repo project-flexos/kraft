@@ -1,65 +1,13 @@
-@gatereplacer_return0_{{ rule_nr }}@
-identifier func;
-expression ret, lname;
-fresh identifier func_id = "{{ ept_id_prefix }}" ## func;
-@@
-- flexos_gate_r({{ lib_dest_name }}, ret, func);
-+ {{ gate_r }}({{ comp_cur_nb }}, {{ comp_dest_nb }}, ret, func_id);
-
-@script:python@
-func_name << gatereplacer_return0_{{ rule_nr }}.func;
-@@
-fname = str(func_name)
-if fname not in entries:
-    entries[fname] = entry_cnt
-    entry_cnt += 1
-
 @gatereplacer_return{{ rule_nr }}@
-identifier func;
 expression list EL;
 expression ret, lname;
-fresh identifier func_id = "{{ ept_id_prefix }}" ## func;
 @@
-- flexos_gate_r({{ lib_dest_name }}, ret, func, EL);
-+ {{ gate_r }}({{ comp_cur_nb }}, {{ comp_dest_nb }}, ret, func_id, EL);
-
-@script:python@
-func_name << gatereplacer_return{{ rule_nr }}.func;
-@@
-fname = str(func_name)
-if fname not in entries:
-    entries[fname] = entry_cnt
-    entry_cnt += 1
-
-@gatereplacer_noreturn0_{{ rule_nr }}@
-identifier func;
-expression lname;
-fresh identifier func_id = "{{ ept_id_prefix }}" ## func;
-@@
-- flexos_gate({{ lib_dest_name }}, func);
-+ {{ gate }}({{ comp_cur_nb }}, {{ comp_dest_nb }}, func_id);
-
-@script:python@
-func_name << gatereplacer_noreturn0_{{ rule_nr }}.func;
-@@
-fname = str(func_name)
-if fname not in entries:
-    entries[fname] = entry_cnt
-    entry_cnt += 1
+- flexos_gate_r({{ lib_dest_name }}, ret, EL);
++ {{ gate_r }}({{ comp_cur_nb }}, {{ comp_dest_nb }}, ret, EL);
 
 @gatereplacer_noreturn{{ rule_nr }}@
-identifier func;
 expression list EL;
 expression lname;
-fresh identifier func_id = "{{ ept_id_prefix }}" ## func;
 @@
-- flexos_gate({{ lib_dest_name }}, func, EL);
-+ {{ gate }}({{ comp_cur_nb }}, {{ comp_dest_nb }}, func_id, EL);
-
-@script:python@
-func_name << gatereplacer_noreturn{{ rule_nr }}.func;
-@@
-fname = str(func_name)
-if fname not in entries:
-    entries[fname] = entry_cnt
-    entry_cnt += 1
+- flexos_gate({{ lib_dest_name }}, EL);
++ {{ gate }}({{ comp_cur_nb }}, {{ comp_dest_nb }}, EL);
