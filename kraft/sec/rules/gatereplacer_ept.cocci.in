@@ -9,10 +9,7 @@ fresh identifier func_id = "{{ ept_id_prefix }}" ## func;
 @script:python@
 func_name << gatereplacer_return0_{{ rule_nr }}.func;
 @@
-fname = str(func_name)
-if fname not in entries:
-    entries[fname] = entry_cnt
-    entry_cnt += 1
+add_func(func_name, {{ comp_dest_nb }})
 
 @gatereplacer_return{{ rule_nr }}@
 identifier func;
@@ -26,10 +23,7 @@ fresh identifier func_id = "{{ ept_id_prefix }}" ## func;
 @script:python@
 func_name << gatereplacer_return{{ rule_nr }}.func;
 @@
-fname = str(func_name)
-if fname not in entries:
-    entries[fname] = entry_cnt
-    entry_cnt += 1
+add_func(func_name, {{ comp_dest_nb }})
 
 @gatereplacer_noreturn0_{{ rule_nr }}@
 identifier func;
@@ -42,10 +36,7 @@ fresh identifier func_id = "{{ ept_id_prefix }}" ## func;
 @script:python@
 func_name << gatereplacer_noreturn0_{{ rule_nr }}.func;
 @@
-fname = str(func_name)
-if fname not in entries:
-    entries[fname] = entry_cnt
-    entry_cnt += 1
+add_func(func_name, {{ comp_dest_nb }})
 
 @gatereplacer_noreturn{{ rule_nr }}@
 identifier func;
@@ -59,7 +50,4 @@ fresh identifier func_id = "{{ ept_id_prefix }}" ## func;
 @script:python@
 func_name << gatereplacer_noreturn{{ rule_nr }}.func;
 @@
-fname = str(func_name)
-if fname not in entries:
-    entries[fname] = entry_cnt
-    entry_cnt += 1
+add_func(func_name, {{ comp_dest_nb }})

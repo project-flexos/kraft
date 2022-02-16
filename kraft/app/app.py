@@ -93,6 +93,7 @@ import fileinput
 class Application(Component):
     # path of file where the names of functions called via gate are collected
     VMEPT_FUNC_LIST_PATH = "/tmp/flexos_vmept_rpc_id_data"
+    VMEPT_FUNC_FUNC_WLIST_PATH = "/tmp/flexos_vmept_wl"
 
     # name and path of auto-generated header file containing the function addresses
     VMEPT_ADDR_TABLE_NAME = "vmept_addr_table"
@@ -615,7 +616,7 @@ class Application(Component):
         return self.make(extra, verbose)
 
     # generate a header containing an array with the addresses of functions called via EPT-gate
-    def vmept_gen_address_table_header(self, func_names, header_name, addr_map = {}, write_to_file = True):
+    def vmept_gen_address_table_header(self, func_names, header_name, addr_map = {}, write_to_file = True, backuppath = None):
         include_guard = "%s_H" % header_name.upper()
         header_code = "#ifndef %s\n" % include_guard
         header_code += "#define %s\n\n" % include_guard
@@ -632,9 +633,11 @@ class Application(Component):
         if write_to_file:
             addr_table_path = os.path.join(self.unikraft.localdir, self.VMEPT_AUTOGEN_INCLUDE_PATH)
             addr_table_path = os.path.join(addr_table_path, self.VMEPT_ADDR_TABLE_NAME + ".h")
-            addr_table_file = open(addr_table_path, "w")
-            addr_table_file.write(header_code)
-            addr_table_file.close()
+            with open(addr_table_path, "w") as addr_table_file:
+                addr_table_file.write(header_code)
+        if backuppath is not None:
+            with open(backuppath, "w") as backupfile:
+                backupfile.write(header_code)
         return header_code
 
     @click.pass_context
@@ -831,7 +834,12 @@ class Application(Component):
                 rpc_id_file.close()
 
         # now do library-specific rewrites
+        #TODO remove
+        logger.debug("## libraries ##")
         for lib in self.libraries:
+            # TODO remove
+            logger.debug(lib.name)
+            
             # first add per-library linker scripts
             if (not lib.compartment.default):
                 add_local_linkerscript(lib, fulldiff=fulldiff)
@@ -843,6 +851,8 @@ class Application(Component):
                 gr_rule_template = get_sec_rule("gatereplacer.cocci.in")
             if FCALLS_enabled:
                 cb_rule_template = get_sec_rule("rmcallbacks.cocci.in")
+            elif is_ept:
+                cb_rule_template = get_sec_rule("callbackreplacer_ept.cocci.in")
             else:
                 cb_rule_template = get_sec_rule("callbackreplacer.cocci.in")
 
@@ -853,17 +863,36 @@ class Application(Component):
                 str(lib.compartment.number))
             gr_rule = ""
 
-            if (is_ept):
+            if is_ept:
+                
+                logger.debug("%s compartments" % str(len(self.compartments))) 
                 rpc_id_gen_template = get_sec_rule("rpc_id_gen.cocci.in")
+
+                rpc_id_gen_template = rpc_id_gen_template.replace("{{ comp_cnt }}",
+                    str(len(self.compartments)))
                 rpc_id_gen_template = rpc_id_gen_template.replace("{{ filename }}",
                     "'" + self.VMEPT_FUNC_LIST_PATH + "'")
+                rpc_id_gen_template = rpc_id_gen_template.replace("{{ func_wl_base }}",
+                    "'" + self.VMEPT_FUNC_FUNC_WLIST_PATH + "'")
                 gr_rule = rpc_id_gen_template + "\n"
-
+            
+            # for EPT calls to some libraries are always local
+			# FIXME some libraries are only temporarily here to build nginx/redis 
+            ept_defaultlibs = [	"libukdebug", "ukdebug"
+								, "libuklock", "uklock", "liblock" 
+								, "libukswrand", "ukswrand" 
+								, "libukplat", "ukplat"
+								, "libuksched", "uksched" 
+                                , "ukboot", "libukboot"
+                                #, "ukmpi", "libukmpi"
+								#, "libc"
+								]
             def gr_gen_rule(dest_name, dest_comp):
                 gr_rule = str(gr_rule_template)
                 name = dest_name
 
-                if (dest_name != "lname" and not dest_name.startswith("app-")):
+                if (dest_name != "lname" and not dest_name.startswith("app-") 
+                     and not dest_name.startswith("lib") and (dest_name not in ept_defaultlibs)):
                     name = "lib" + name.replace("-", "")
 
                 gr_rule = gr_rule.replace("{{ lib_dest_name }}", name)
@@ -875,8 +904,16 @@ class Application(Component):
                     # FIXME magic value, put somewhere
                     gr_gate = "flexos_nop_gate"
                     gr_rule = gr_rule.replace("{{ ept_id_prefix }}", "")
-                else:
-                    gr_rule = gr_rule.replace("{{ ept_id_prefix }}", ept_rpc_id_prefix)
+                elif is_ept:
+                    if (name in ept_defaultlibs):
+                        # TODO remove
+                        logger.debug("inserted nop_gate for %s (rewriting lib: %s)" % (name, lib.name))
+                        gr_gate = "flexos_nop_gate"
+                        gr_rule = gr_rule.replace("{{ ept_id_prefix }}", "")
+                    else:
+                        gr_rule = gr_rule.replace("{{ ept_id_prefix }}", ept_rpc_id_prefix)
+                        # TODO remove
+                        logger.debug("inserted vmept_gate for %s (rewriting lib: %s)" % (name, lib.name))
 
                 gr_rule = gr_rule.replace("{{ gate }}", gr_gate)
                 gr_rule = gr_rule.replace("{{ gate_r }}", gr_gate + "_r")
@@ -893,7 +930,8 @@ class Application(Component):
                 name = dest_name.replace("-", "")
 
                 if (dest_name != "lname" and not dest_name.startswith("app")
-                                        and not dest_name.startswith("lib")):
+                                        and not dest_name.startswith("lib")
+										and (dest_name not in ept_defaultlibs)):
                     name = "lib" + name
 
                 cb_rule = cb_rule.replace("{{ lib_from_name }}", name)
@@ -904,6 +942,17 @@ class Application(Component):
                 if dest_comp == lib.compartment:
                     # FIXME magic value, put somewhere
                     cb_gate = "flexos_nop_gate"
+                    cb_rule = cb_rule.replace("{{ ept_id_prefix }}", "")
+                elif is_ept:
+                    if (name in ept_defaultlibs):
+                        # TODO remove
+                        logger.debug("inserted nop_gate for %s (callback, rewriting lib: %s)" % (name, lib.name))
+                        cb_gate = "flexos_nop_gate"
+                        cb_rule = cb_rule.replace("{{ ept_id_prefix }}", "")
+                    else:
+                        # TODO remove
+                        logger.debug("inserted vmept_gate for %s (callback, rewriting lib: %s)" % (name, lib.name))
+                        cb_rule = cb_rule.replace("{{ ept_id_prefix }}", ept_rpc_id_prefix)
 
                 cb_rule = cb_rule.replace("{{ gate }}", cb_gate)
                 cb_rule = cb_rule.replace("{{ gate_r }}", cb_gate + "_r")
@@ -938,6 +987,10 @@ class Application(Component):
 
             # default rule, lname will match anything so this rule has to be at the end
             default_comp = [comp for comp in self.compartments if comp.default][0]
+            if is_ept:
+                # this increases the number of rules but is needed for EPT
+                for libname in ept_defaultlibs:
+                    gr_rule += gr_gen_rule(libname, default_comp)
             gr_rule += gr_gen_rule("lname", default_comp)
 
             # add malloc/free/calloc replacement rule
