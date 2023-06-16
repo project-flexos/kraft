@@ -1,0 +1,76 @@
+@initialize:python@ @@
+import os
+import os.path
+import operator
+
+#TODO remove
+tmpout = open("/root/gaterep_info", "a+")
+tmpout.write("#### new rewrite starting from here ####\n")
+
+comp_cnt = {{ comp_cnt }}
+filename = {{ filename }}
+func_wl_base_name = {{ func_wl_base }}
+
+entry_cnt = 0
+
+def get_func_names(filename_funclist):
+    global entry_cnt
+    entries = {}
+    with open(filename_funclist, "r") as file:
+        lines = file.readlines()
+        for l in lines:
+            entries[l.strip()] = entry_cnt
+            entry_cnt += 1
+    return entries
+
+def get_whitelist_funcs(filename_wl):
+    with open(filename_wl, "r") as file:
+        lines = file.readlines()
+        wl_funcs = {}
+        for l in lines:
+            fname = l.strip()
+            wl_funcs[fname] = func_entries[fname]
+    return wl_funcs
+        
+
+func_entries = get_func_names(filename)
+
+# for each compartment maintain the functions called in it
+func_whitelists = {}
+for c in range(comp_cnt):
+    wl_filename = func_wl_base_name + str(c)
+    if os.path.isfile(wl_filename):
+        func_whitelists[c] = get_whitelist_funcs(wl_filename)
+    else:
+        func_whitelists[c] = {}
+
+def add_func(func, target_comp):
+    global entry_cnt
+    global func_whitelists
+    fname = str(func)
+    if fname not in func_entries:
+        func_entries[fname] = entry_cnt
+        entry_cnt += 1
+    target_wl = func_whitelists[target_comp]
+    if fname not in target_wl:
+        target_wl[func] = func_entries[fname]
+    tmpout.write("gatereplacer_return0 %s\n" % fname)
+
+@finalize:python@ @@
+
+#TODO remove
+tmpout.close()
+
+with open(filename, "w") as file:
+    sorted_entries = sorted(func_entries.items(), key=operator.itemgetter(1))
+    for e in sorted_entries:
+        file.write(e[0] + "\n")
+
+ 
+for c in range(comp_cnt):
+    wl = func_whitelists[c]
+    sorted_wl = sorted(wl.items(), key=operator.itemgetter(1))
+    with open(func_wl_base_name + str(c), "w") as file:
+        for e in sorted_wl:
+            file.write(e[0] + "\n")
+    

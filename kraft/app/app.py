@@ -91,6 +91,16 @@ import fileinput
 
 
 class Application(Component):
+    # path of file where the names of functions called via gate are collected
+    VMEPT_FUNC_LIST_PATH = "/tmp/flexos_vmept_rpc_id_data"
+    VMEPT_FUNC_FUNC_WLIST_PATH = "/tmp/flexos_vmept_wl"
+
+    # name and path of auto-generated header file containing the function addresses
+    VMEPT_ADDR_TABLE_NAME = "vmept_addr_table"
+
+    # where to put auto-generated header files (relative to the unikraft build directory)
+    VMEPT_AUTOGEN_INCLUDE_PATH = "lib/flexos-core/include/flexos/impl"
+
     _type = ComponentType.APP
 
     _config = None
@@ -605,6 +615,31 @@ class Application(Component):
 
         return self.make(extra, verbose)
 
+    # generate a header containing an array with the addresses of functions called via EPT-gate
+    def vmept_gen_address_table_header(self, func_names, header_name, addr_map = {}, write_to_file = True, backuppath = None):
+        include_guard = "%s_H" % header_name.upper()
+        header_code = "#ifndef %s\n" % include_guard
+        header_code += "#define %s\n\n" % include_guard
+        header_code += 'static const void* flexos_vmept_addr_table[] __attribute__((section (".rodata"))) = {\n'
+        num_entries = len(func_names)
+        i = 0
+        for fname in func_names:
+            i += 1
+            sep = "," if i < num_entries else " "
+            addr = addr_map[fname] if fname in addr_map else 0
+            header_code += "\t(void*) 0x%016x%s /* %s */\n" % (addr, sep, fname)
+        header_code += "};\n\n"
+        header_code += "#endif /* %s */" % include_guard
+        if write_to_file:
+            addr_table_path = os.path.join(self.unikraft.localdir, self.VMEPT_AUTOGEN_INCLUDE_PATH)
+            addr_table_path = os.path.join(addr_table_path, self.VMEPT_ADDR_TABLE_NAME + ".h")
+            with open(addr_table_path, "w") as addr_table_file:
+                addr_table_file.write(header_code)
+        if backuppath is not None:
+            with open(backuppath, "w") as backupfile:
+                backupfile.write(header_code)
+        return header_code
+
     @click.pass_context
     def compartmentalize(ctx, self):
         self.find_files()
@@ -792,29 +827,72 @@ class Application(Component):
         cmd = ["diff", "-urNp", backup_src, filep]
         subprocess.call(cmd, stdout=fulldiff, stderr=subprocess.STDOUT)
 
+        is_ept = type(self.compartments[0].mechanism.driver) == VMEPTDriver
+        if is_ept and not os.path.isfile(self.VMEPT_FUNC_LIST_PATH):
+                # make sure this file exists
+                rpc_id_file = open(self.VMEPT_FUNC_LIST_PATH, "w")
+                rpc_id_file.close()
+
         # now do library-specific rewrites
+        #TODO remove
+        logger.debug("## libraries ##")
         for lib in self.libraries:
+            # TODO remove
+            logger.debug(lib.name)
+            
             # first add per-library linker scripts
             if (not lib.compartment.default):
                 add_local_linkerscript(lib, fulldiff=fulldiff)
 
             # then generate cocci files dynamically from the template
-            gr_rule_template = get_sec_rule("gatereplacer.cocci.in")
+            if is_ept:
+                gr_rule_template = get_sec_rule("gatereplacer_ept.cocci.in")
+            else:
+                gr_rule_template = get_sec_rule("gatereplacer.cocci.in")
             if FCALLS_enabled:
                 cb_rule_template = get_sec_rule("rmcallbacks.cocci.in")
+            elif is_ept:
+                cb_rule_template = get_sec_rule("callbackreplacer_ept.cocci.in")
             else:
                 cb_rule_template = get_sec_rule("callbackreplacer.cocci.in")
+
             gr_rule_template = gr_rule_template.replace("{{ comp_cur_nb }}",
                 str(lib.compartment.number))
+            ept_rpc_id_prefix = "_RPC_ID_" if is_ept else ""
             cb_rule_template = cb_rule_template.replace("{{ comp_cur_nb }}",
                 str(lib.compartment.number))
             gr_rule = ""
 
+            if is_ept:
+                
+                logger.debug("%s compartments" % str(len(self.compartments))) 
+                rpc_id_gen_template = get_sec_rule("rpc_id_gen.cocci.in")
+
+                rpc_id_gen_template = rpc_id_gen_template.replace("{{ comp_cnt }}",
+                    str(len(self.compartments)))
+                rpc_id_gen_template = rpc_id_gen_template.replace("{{ filename }}",
+                    "'" + self.VMEPT_FUNC_LIST_PATH + "'")
+                rpc_id_gen_template = rpc_id_gen_template.replace("{{ func_wl_base }}",
+                    "'" + self.VMEPT_FUNC_FUNC_WLIST_PATH + "'")
+                gr_rule = rpc_id_gen_template + "\n"
+            
+            # for EPT calls to some libraries are always local
+			# FIXME some libraries are only temporarily here to build nginx/redis 
+            ept_defaultlibs = [	"libukdebug", "ukdebug"
+								, "libuklock", "uklock", "liblock" 
+								, "libukswrand", "ukswrand" 
+								, "libukplat", "ukplat"
+								, "libuksched", "uksched" 
+                                , "ukboot", "libukboot"
+                                #, "ukmpi", "libukmpi"
+								#, "libc"
+								]
             def gr_gen_rule(dest_name, dest_comp):
                 gr_rule = str(gr_rule_template)
                 name = dest_name
 
-                if (dest_name != "lname" and not dest_name.startswith("app-")):
+                if (dest_name != "lname" and not dest_name.startswith("app-") 
+                     and not dest_name.startswith("lib") and (dest_name not in ept_defaultlibs)):
                     name = "lib" + name.replace("-", "")
 
                 gr_rule = gr_rule.replace("{{ lib_dest_name }}", name)
@@ -825,6 +903,17 @@ class Application(Component):
                 if dest_comp == lib.compartment:
                     # FIXME magic value, put somewhere
                     gr_gate = "flexos_nop_gate"
+                    gr_rule = gr_rule.replace("{{ ept_id_prefix }}", "")
+                elif is_ept:
+                    if (name in ept_defaultlibs):
+                        # TODO remove
+                        logger.debug("inserted nop_gate for %s (rewriting lib: %s)" % (name, lib.name))
+                        gr_gate = "flexos_nop_gate"
+                        gr_rule = gr_rule.replace("{{ ept_id_prefix }}", "")
+                    else:
+                        gr_rule = gr_rule.replace("{{ ept_id_prefix }}", ept_rpc_id_prefix)
+                        # TODO remove
+                        logger.debug("inserted vmept_gate for %s (rewriting lib: %s)" % (name, lib.name))
 
                 gr_rule = gr_rule.replace("{{ gate }}", gr_gate)
                 gr_rule = gr_rule.replace("{{ gate_r }}", gr_gate + "_r")
@@ -841,7 +930,8 @@ class Application(Component):
                 name = dest_name.replace("-", "")
 
                 if (dest_name != "lname" and not dest_name.startswith("app")
-                                        and not dest_name.startswith("lib")):
+                                        and not dest_name.startswith("lib")
+										and (dest_name not in ept_defaultlibs)):
                     name = "lib" + name
 
                 cb_rule = cb_rule.replace("{{ lib_from_name }}", name)
@@ -852,6 +942,17 @@ class Application(Component):
                 if dest_comp == lib.compartment:
                     # FIXME magic value, put somewhere
                     cb_gate = "flexos_nop_gate"
+                    cb_rule = cb_rule.replace("{{ ept_id_prefix }}", "")
+                elif is_ept:
+                    if (name in ept_defaultlibs):
+                        # TODO remove
+                        logger.debug("inserted nop_gate for %s (callback, rewriting lib: %s)" % (name, lib.name))
+                        cb_gate = "flexos_nop_gate"
+                        cb_rule = cb_rule.replace("{{ ept_id_prefix }}", "")
+                    else:
+                        # TODO remove
+                        logger.debug("inserted vmept_gate for %s (callback, rewriting lib: %s)" % (name, lib.name))
+                        cb_rule = cb_rule.replace("{{ ept_id_prefix }}", ept_rpc_id_prefix)
 
                 cb_rule = cb_rule.replace("{{ gate }}", cb_gate)
                 cb_rule = cb_rule.replace("{{ gate_r }}", cb_gate + "_r")
@@ -868,6 +969,7 @@ class Application(Component):
             # with future upstream releases of Coccinelle, talking about it with Julia
             whitelisted_libs = ["libvfscore", "libuknetdev", "newlib",
                                 "libuksched", "libuksignal", "libukboot"]
+
             for dest_lib in self.libraries:
                 if (not dest_lib.compartment.default) and (dest_lib.name != lib.name):
                     # this library is not in the default compartment, add a specific rule
@@ -885,6 +987,10 @@ class Application(Component):
 
             # default rule, lname will match anything so this rule has to be at the end
             default_comp = [comp for comp in self.compartments if comp.default][0]
+            if is_ept:
+                # this increases the number of rules but is needed for EPT
+                for libname in ept_defaultlibs:
+                    gr_rule += gr_gen_rule(libname, default_comp)
             gr_rule += gr_gen_rule("lname", default_comp)
 
             # add malloc/free/calloc replacement rule
@@ -919,6 +1025,34 @@ class Application(Component):
             logger.debug("Coccinelle rules for " + lib.name + ": " + rule_file)
 
             coccinelle_rewrite(lib, rule_file, fulldiff)
+
+        # generate a header with macros defining IDs for all
+        # functions given by function_names
+        def vmept_gen_rpc_id_macro_header(function_names, header_name):
+            include_guard = "%s_H" % header_name.upper()
+            header_code = "#ifndef %s\n" % include_guard
+            header_code += "#define %s\n\n" % include_guard
+            rpc_id = 0
+            for fname in function_names:
+                header_code += "#define %s%s %d\n" % (ept_rpc_id_prefix, fname, rpc_id)
+                rpc_id += 1
+            header_code += "\n#define FLEXOS_VMEPT_RPCID_CNT %d\n\n" % rpc_id
+            header_code += "#endif /* %s */" % include_guard
+            return header_code
+
+        if (is_ept):
+            rpc_id_file = open(self.VMEPT_FUNC_LIST_PATH, "r")
+            fnames = list(map(str.strip, rpc_id_file.readlines()))
+            rpc_id_file.close()
+            id_header_name = "vmept_rpc_id"
+            addr_table_name = "flexos_%s" % self.VMEPT_ADDR_TABLE_NAME
+            id_header_code = vmept_gen_rpc_id_macro_header(fnames, id_header_name)
+            addr_table_code = self.vmept_gen_address_table_header(fnames, addr_table_name, write_to_file = True)
+            id_header_path = os.path.join(self.unikraft.localdir, self.VMEPT_AUTOGEN_INCLUDE_PATH)
+            id_header_path = os.path.join(id_header_path, id_header_name + ".h")
+            id_header_file = open(id_header_path, "w")
+            id_header_file.write(id_header_code)
+            id_header_file.close()
 
         logger.info("Full diff of rewritings: %s" % fulldifff)
         fulldiff.close()

@@ -80,9 +80,34 @@ def _kraft_build_ept(app, no_ept, verbose, fast=False):
                 stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
     appcomp = None
+    appcompnum = 0 # assume app is in comp0
     for lib in app.libraries:
+        # TODO
+        logger.info("lib: %s, compartment: %s" % (lib.name, str(lib.compartment.number)))
         if lib.name.startswith("app"):
             appcomp = lib.compartment
+
+    if appcomp is not None:
+        appcompnum = appcomp.number        
+
+    # get VMEPT config options
+    max_threads_shift = 8 # max hreads is (1 << max_threads_shift)
+    with open(os.path.join(app.localdir, ".config")) as conf:
+        conf_data = conf.read()
+        if 'CONFIG_LIBFLEXOS_VMEPT_MAX_THREADS_256=y' in conf_data:
+            max_threads_shift = 8
+        if 'CONFIG_LIBFLEXOS_VMEPT_MAX_THREADS_128=y' in conf_data:
+            max_threads_shift = 7
+        if 'CONFIG_LIBFLEXOS_VMEPT_MAX_THREADS_64=y' in conf_data:
+            max_threads_shift = 6
+        if 'CONFIG_LIBFLEXOS_VMEPT_MAX_THREADS_32=y' in conf_data:
+            max_threads_shift = 5
+        if 'CONFIG_LIBFLEXOS_VMEPT_MAX_THREADS_16=y' in conf_data:
+            max_threads_shift = 4
+        if 'CONFIG_LIBFLEXOS_VMEPT_MAX_THREADS_8=y' in conf_data:
+            max_threads_shift = 3
+        if 'CONFIG_LIBFLEXOS_VMEPT_MAX_THREADS_4=y' in conf_data:
+            max_threads_shift = 2
 
     i = 0
     logger.info("Building with VM/EPT: " + str(no_ept) + " images to build.")
@@ -92,7 +117,8 @@ def _kraft_build_ept(app, no_ept, verbose, fast=False):
         # edit build args
         extra_args = ["CFLAGS_EXTRA=-DFLEXOS_VMEPT_COMP_ID=" + str(i) 
                     + " -DFLEXOS_VMEPT_COMP_COUNT=" + str(no_ept)
-                    + " -DFLEXOS_VMEPT_APPCOMP=" + str(appcomp.number)]
+                    + " -DFLEXOS_VMEPT_APPCOMP=" + str(appcompnum)
+                    + " -DFLEXOS_VMEPT_MAX_THREADS_SHIFT=" + str(max_threads_shift)]
         if fast:
             extra_args.insert(0, "-j")
 
@@ -102,6 +128,46 @@ def _kraft_build_ept(app, no_ept, verbose, fast=False):
         subprocess.call("make clean", shell=True)
 
         # build
+        return_code = make_progressbar(app.make_raw(verbose=verbose,
+            extra=extra_args))
+
+        if (return_code > 0):
+            # there was probably an error
+            logger.error("Aborting build due to probable error during execution "
+                         "of the make command (code " + str(return_code) + ")")
+            return
+
+        for target in app.binaries:
+            # insert correct addresses
+            with open(Application.VMEPT_FUNC_LIST_PATH, "r") as funcname_file:
+                fnames = list(map(str.strip, funcname_file.readlines()))
+
+            with open(Application.VMEPT_FUNC_FUNC_WLIST_PATH + str(i), "r") as wl_file:
+                fnames_wl = list(map(str.strip, wl_file.readlines()))
+
+            addr_map = {}
+            for fname in fnames:
+                addr_map[fname] = 0
+
+            readelf = subprocess.Popen(['readelf', '-sW', target.binary_debug], stdout = subprocess.PIPE)
+            output = subprocess.check_output(['awk', '{if ($4 == "FUNC") { print $2,$8 } }'], stdin = readelf.stdout).decode()
+            readelf.wait()
+
+            raw_lines = output.splitlines()
+
+            entries = []
+            for line in raw_lines:
+                fields = line.split()
+                address = int(fields[0], 16)
+                name = fields[1]
+                if name in addr_map and name in fnames_wl:
+                    addr_map[name] = address
+
+            patched_code = app.vmept_gen_address_table_header(fnames,
+                Application.VMEPT_ADDR_TABLE_NAME, addr_map, 
+                write_to_file = True, backuppath = "/tmp/flexos_vmept_addr_table_" + str(i))
+
+        # build again
         return_code = make_progressbar(app.make_raw(verbose=verbose,
             extra=extra_args))
 
